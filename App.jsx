@@ -239,6 +239,68 @@ const css = `
 .stat .l{font-size:11.5px;color:var(--gris-500);font-weight:600;margin-top:2px;}
 .stat .ic{width:30px;height:30px;border-radius:9px;display:flex;align-items:center;
   justify-content:center;margin-bottom:9px;}
+
+/* ============================================================
+   RESPONSIVE — tablette (>=768px) puis ordinateur (>=1024px).
+   Tout le bloc ci-dessus reste l'affichage TÉLÉPHONE (inchangé).
+   Les règles suivantes ne s'activent que sur les écrans plus larges,
+   et la coque cesse d'être une bande étroite de 480px.
+   ============================================================ */
+
+/* Listes de cartes : empilées sur téléphone (exactement comme avant),
+   réorganisées en grille souple à partir de la tablette. */
+.grille-cartes{display:flex;flex-direction:column;gap:10px;}
+.grille-sites{display:flex;flex-direction:column;gap:18px;}
+
+@media (min-width:768px){
+  .grille-cartes{display:grid;gap:12px;align-items:start;
+    grid-template-columns:repeat(auto-fit,minmax(240px,1fr));}
+  .grille-sites{display:grid;gap:18px;align-items:start;
+    grid-template-columns:repeat(auto-fit,minmax(380px,1fr));}
+
+  /* La coque adopte une largeur de site web (centrée). */
+  .gea-shell:not(.gea-shell--solo){max-width:900px;}
+
+  /* Barre d'onglets : centrée, libellés à côté des icônes. */
+  .gea-shell:not(.gea-shell--solo) > .nav-onglets{justify-content:center;
+    gap:6px;padding:8px 14px;}
+  .gea-shell:not(.gea-shell--solo) > .nav-onglets .onglet{flex-direction:row;
+    gap:8px;padding:9px 14px;font-size:12px;}
+
+  /* Contenu un peu plus aéré. */
+  .gea-shell:not(.gea-shell--solo) > main > .page{padding-left:22px;padding-right:22px;}
+}
+
+@media (min-width:1024px){
+  /* Pleine largeur maîtrisée (largeur max d'un site classique). */
+  .gea-shell:not(.gea-shell--solo){max-width:1200px;}
+
+  /* Zone de lecture confortable : colonne large centrée. */
+  .gea-shell:not(.gea-shell--solo) > main > .page{
+    max-width:1080px;margin-left:auto;margin-right:auto;
+    padding:26px 28px 90px;}
+
+  /* Boutons « pleine largeur » plafonnés et centrés (les boutons
+     jumelés en .btn-sm gardent leur largeur automatique). */
+  .gea-shell:not(.gea-shell--solo) .page .btn:not(.btn-sm){
+    max-width:520px;margin-left:auto;margin-right:auto;}
+
+  /* Onglets légèrement plus grands sur grand écran. */
+  .gea-shell:not(.gea-shell--solo) > .nav-onglets .onglet{font-size:12.5px;padding:10px 16px;}
+}
+
+/* L'écran « nouveau mot de passe » reste une colonne étroite et centrée
+   sur tous les formats (un écran de connexion ne doit pas s'étaler). */
+.gea-shell--solo{max-width:480px;}
+
+/* Confort d'usage : focus clavier visible et mouvement réduit respecté. */
+.gea-app button:focus-visible,
+.gea-app a:focus-visible,
+.gea-app input:focus-visible,
+.gea-app select:focus-visible{outline:2px solid var(--or-500);outline-offset:2px;}
+@media (prefers-reduced-motion:reduce){
+  .gea-app *{animation-duration:.001ms !important;transition-duration:.001ms !important;}
+}
 `;
 
 /* ============================================================
@@ -399,6 +461,56 @@ async function inscriptionEmail(email, motDePasse){
 // Demande de réinitialisation du mot de passe (email de récupération)
 async function motDePasseOublie(email){
   await appelAuth("/recover", { email: email.trim().toLowerCase() });
+}
+
+// Enregistre le NOUVEAU mot de passe à partir du jeton reçu dans le lien email.
+// Appelle l'API Supabase (PUT /user) avec ce jeton de récupération.
+async function definirNouveauMotDePasse(jetonRecuperation, nouveauMotDePasse){
+  const r = await fetch(SUPABASE_URL + "/auth/v1/user", {
+    method: "PUT",
+    headers: {
+      "Content-Type":  "application/json",
+      "apikey":        SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + jetonRecuperation,
+    },
+    body: JSON.stringify({ password: nouveauMotDePasse }),
+  });
+  const data = await r.json().catch(()=> ({}));
+  if(!r.ok){
+    const msg = data.error_description || data.msg || data.error || ("Erreur " + r.status);
+    throw new Error(msg);
+  }
+  return data;
+}
+
+// Lit le lien de récupération reçu par email (Supabase place le jeton dans l'adresse,
+// après le « # »). Renvoie :
+//   { jeton }   -> on doit afficher l'écran « nouveau mot de passe »
+//   { erreur }  -> le lien est invalide ou expiré (message à montrer)
+//   null        -> adresse normale, rien à faire
+function lireLienRecuperation(){
+  try{
+    const brut = (window.location.hash || "").replace(/^#/, "");
+    if(!brut) return null;
+    const p = new URLSearchParams(brut);
+    if(p.get("error") || p.get("error_description")){
+      const detail = (p.get("error_code") || "") + " " + (p.get("error_description") || p.get("error") || "");
+      return { erreur: /expired|otp_expired/i.test(detail)
+        ? "Ce lien de réinitialisation a expiré. Demandez-en un nouveau via « Mot de passe oublié ? »."
+        : "Ce lien de réinitialisation n'est pas valide. Demandez-en un nouveau." };
+    }
+    if(p.get("type") === "recovery" && p.get("access_token")){
+      return { jeton: p.get("access_token") };
+    }
+    return null;
+  }catch(e){ return null; }
+}
+
+// Retire le jeton de l'adresse une fois lu (il ne doit pas rester visible dans le navigateur).
+function nettoyerAdresse(){
+  try{
+    window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }catch(e){ /* sans effet si l'historique n'est pas disponible */ }
 }
 
 // Rafraîchit un jeton expiré ; renvoie la nouvelle session ou null
@@ -946,7 +1058,7 @@ function Accueil({ allerA }){
         {/* AVANTAGES */}
         <div className="eyebrow">Pourquoi GEA-HOLDING</div>
         <h2 className="titre-page" style={{fontSize:18,marginBottom:14}}>Des atouts qui rassurent</h2>
-        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:26}}>
+        <div className="grille-cartes" style={{marginBottom:26}}>
           {avantages.map((a,i)=>(
             <div key={i} className="carte carte-pad" style={{display:"flex",gap:13,alignItems:"flex-start"}}>
               <div style={{width:42,height:42,borderRadius:12,flex:"0 0 auto",
@@ -1053,7 +1165,7 @@ function Projets({ allerA, mediasParSite, modeAdmin, gererImport, supprimerMedia
         </div>
       )}
 
-      <div style={{display:"flex",flexDirection:"column",gap:18}}>
+      <div className="grille-sites">
         {SITES.map((site)=>(
           <div key={site.id} className="carte carte-pad">
             <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:4}}>
@@ -1616,18 +1728,56 @@ function Souscription(){
   const [erreur, setErreur] = useState("");
   const [envoye, setEnvoye] = useState(false);
   const [refDossier, setRefDossier] = useState("");
+  const [envoiEnCours, setEnvoiEnCours] = useState(false);   // true pendant l'enregistrement serveur
+  const [secoursLocal, setSecoursLocal] = useState(false);   // true si l'enregistrement en ligne a échoué (WhatsApp prend le relais)
   const set = (k,v)=> setF(o=>({ ...o, [k]:v }));
 
-  const valider = ()=>{
+  // référence de secours, générée localement si le serveur est momentanément injoignable
+  const refDeSecours = ()=> "GEA-" + new Date().getFullYear() + "-" + Math.floor(1000+Math.random()*9000);
+
+  // Enregistre la souscription dans Supabase (table "souscriptions") via la fonction
+  // serveur "creer_souscription", puis affiche l'écran de confirmation + WhatsApp.
+  const valider = async ()=>{
     if(!f.nom.trim() || !f.prenoms.trim() || !f.telephone.trim()){
       setErreur("Merci de renseigner au minimum vos nom, prénoms et téléphone.");
       window.scrollTo({ top:0, behavior:"smooth" });
       return;
     }
-    const reference = "GEA-" + new Date().getFullYear() + "-" + Math.floor(1000+Math.random()*9000);
-    setRefDossier(reference);
-    setErreur(""); setEnvoye(true);
-    window.scrollTo({ top:0, behavior:"smooth" });
+    setErreur("");
+    setEnvoiEnCours(true);
+    try{
+      const resultat = await appelRPC("creer_souscription", {
+        p_civilite:       f.civilite,
+        p_nom:            f.nom.trim(),
+        p_prenoms:        f.prenoms.trim(),
+        p_naissance:      f.naissance,
+        p_lieu_naissance: f.lieuNaissance,
+        p_nationalite:    f.nationalite,
+        p_profession:     f.profession,
+        p_telephone:      f.telephone.trim(),
+        p_email:          f.email,
+        p_residence:      f.residence,
+        p_type_piece:     f.typePiece,
+        p_num_piece:      f.numPiece,
+        p_site_id:        f.site,
+        p_mode:           f.mode,
+        p_apport:         f.apport ? versNombre(f.apport) : null,
+        p_mensualite:     f.mensualite ? versNombre(f.mensualite) : null,
+        p_contact_nom:    f.contactNom,
+        p_contact_tel:    f.contactTel,
+      });
+      // le serveur renvoie la référence officielle (ex. GEA-2026-0007)
+      setRefDossier(resultat && resultat.reference ? resultat.reference : refDeSecours());
+      setSecoursLocal(false);
+    }catch(e){
+      // enregistrement en ligne indisponible : on NE PERD PAS le client, WhatsApp prend le relais
+      setRefDossier(refDeSecours());
+      setSecoursLocal(true);
+    }finally{
+      setEnvoiEnCours(false);
+      setEnvoye(true);
+      window.scrollTo({ top:0, behavior:"smooth" });
+    }
   };
 
   const champ = (label, k, type="text", ph="") => (
@@ -1667,9 +1817,13 @@ function Souscription(){
             background:"var(--vert-ok)",display:"flex",alignItems:"center",justifyContent:"center"}}>
             <Check size={32} color="#fff"/>
           </div>
-          <h1 className="titre-page" style={{fontSize:20}}>Souscription enregistrée</h1>
+          <h1 className="titre-page" style={{fontSize:20}}>
+            {secoursLocal ? "Demande prête à envoyer" : "Souscription enregistrée"}
+          </h1>
           <p className="sous-titre" style={{marginBottom:16}}>
-            Merci {f.civilite} {f.nom}. Envoyez votre demande sur WhatsApp pour qu'un conseiller GEA-HOLDING vous recontacte.
+            {secoursLocal
+              ? <>Merci {f.civilite} {f.nom}. L'enregistrement en ligne est momentanément indisponible : envoyez votre demande sur WhatsApp, un conseiller GEA-HOLDING la traitera et vous recontactera.</>
+              : <>Merci {f.civilite} {f.nom}. Votre souscription a bien été enregistrée auprès de GEA-HOLDING. Un conseiller vous recontactera. Vous pouvez aussi la transmettre dès maintenant sur WhatsApp.</>}
           </p>
           <div className="carte carte-pad" style={{textAlign:"left",background:"#fff"}}>
             <div className="info-fixe"><span className="lbl">Référence dossier</span><span className="val">{refDossier}</span></div>
@@ -1798,15 +1952,19 @@ function Souscription(){
         <Lock size={16} color="var(--vert-600)" style={{flex:"0 0 auto",marginTop:2}}/>
         <div style={{fontSize:11.5,color:"var(--gris-700)",lineHeight:1.5}}>
           <strong style={{color:"var(--vert-600)"}}>Confidentialité.</strong> Les informations recueillies servent uniquement
-          à traiter votre demande et à permettre à un conseiller GEA-HOLDING de vous recontacter. Elles sont transmises
-          à GEA-HOLDING via WhatsApp et ne sont ni vendues ni cédées à des tiers. Conformément à la loi ivoirienne sur la
+          à traiter votre demande et à permettre à un conseiller GEA-HOLDING de vous recontacter. Elles sont enregistrées
+          dans le registre sécurisé de GEA-HOLDING (et, si vous le souhaitez, transmises via WhatsApp) et ne sont ni vendues ni cédées à des
+          tiers. Conformément à la loi ivoirienne sur la
           protection des données personnelles, vous disposez d'un droit d'accès, de rectification et de suppression de vos
           données ; pour l'exercer, utilisez les coordonnées en bas de page. En validant, vous consentez à ce traitement.
         </div>
       </div>
 
-      <button className="btn btn-vert" onClick={valider}>
-        <ShieldCheck size={18}/> Valider ma souscription
+      <button className="btn btn-vert" onClick={valider} disabled={envoiEnCours}
+        style={envoiEnCours ? {opacity:.7, cursor:"default"} : undefined}>
+        {envoiEnCours
+          ? <>Enregistrement en cours…</>
+          : <><ShieldCheck size={18}/> Valider ma souscription</>}
       </button>
       <div style={{fontSize:11,color:"var(--gris-400)",textAlign:"center",marginTop:10,
         display:"flex",alignItems:"center",justifyContent:"center",gap:6}}>
@@ -1989,6 +2147,115 @@ function EcranConnexion({ titre, sousTitre, avecInscription, noteAide, onConnect
         </div>
       )}
     </>
+  );
+}
+
+/* ------------------------------------------------------------
+   Écran « Définir un nouveau mot de passe »
+   Affiché automatiquement quand l'utilisateur arrive depuis le lien
+   reçu par email. Utilise le jeton de récupération pour enregistrer
+   le nouveau mot de passe, puis renvoie vers la connexion.
+   ------------------------------------------------------------ */
+function EcranNouveauMotDePasse({ jeton, messageLien, onTermine }){
+  const [mdp, setMdp]                   = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [erreur, setErreur]             = useState("");
+  const [chargement, setChargement]     = useState(false);
+  const [reussi, setReussi]             = useState(false);
+
+  const enregistrer = async ()=>{
+    if(mdp.length < 8){ setErreur("Choisissez un mot de passe d'au moins 8 caractères."); return; }
+    if(mdp !== confirmation){ setErreur("Les deux mots de passe ne sont pas identiques."); return; }
+    setErreur(""); setChargement(true);
+    try{
+      await definirNouveauMotDePasse(jeton, mdp);
+      deconnexion();                       // on repart d'une session propre
+      setReussi(true);
+      window.scrollTo({ top:0, behavior:"smooth" });
+    }catch(e){ setErreur(messageErreur(e)); }
+    finally{ setChargement(false); }
+  };
+
+  // ----- lien invalide ou expiré -----
+  if(messageLien){
+    return (
+      <div className="page">
+        <div className="carte" style={{background:"linear-gradient(135deg,#13502E,#1A6138)",
+          border:"none",padding:18,marginBottom:16}}>
+          <div style={{color:"#fff",fontSize:18,fontWeight:800}}>Réinitialisation du mot de passe</div>
+        </div>
+        <div className="carte carte-pad">
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <AlertTriangle size={18} color="#C0392B"/>
+            <div style={{fontSize:14.5,fontWeight:800,color:"var(--gris-700)"}}>Lien expiré ou invalide</div>
+          </div>
+          <div style={{fontSize:13,color:"var(--gris-500)",lineHeight:1.55,marginBottom:16}}>{messageLien}</div>
+          <button className="btn btn-vert" onClick={onTermine}>Retour à la connexion</button>
+        </div>
+      </div>
+    );
+  }
+
+  // ----- mot de passe enregistré -----
+  if(reussi){
+    return (
+      <div className="page">
+        <div className="carte" style={{background:"linear-gradient(135deg,#13502E,#1A6138)",
+          border:"none",padding:18,marginBottom:16}}>
+          <div style={{color:"#fff",fontSize:18,fontWeight:800}}>Mot de passe modifié</div>
+        </div>
+        <div className="carte carte-pad" style={{textAlign:"center"}}>
+          <div style={{width:54,height:54,borderRadius:"50%",background:"var(--vert-50)",
+            display:"flex",alignItems:"center",justifyContent:"center",margin:"4px auto 14px"}}>
+            <Check size={28} color="var(--vert-600)"/>
+          </div>
+          <div style={{fontSize:15,fontWeight:800,color:"var(--gris-700)",marginBottom:6}}>
+            Votre nouveau mot de passe est enregistré.
+          </div>
+          <div style={{fontSize:13,color:"var(--gris-500)",lineHeight:1.55,marginBottom:18}}>
+            Vous pouvez maintenant vous connecter avec ce mot de passe.
+          </div>
+          <button className="btn btn-vert" onClick={onTermine}>
+            <LogIn size={17}/> Aller à la connexion
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // ----- saisie du nouveau mot de passe -----
+  return (
+    <div className="page">
+      <div className="carte" style={{background:"linear-gradient(135deg,#13502E,#1A6138)",
+        border:"none",padding:18,marginBottom:16}}>
+        <div style={{color:"#fff",fontSize:18,fontWeight:800}}>Nouveau mot de passe</div>
+        <div style={{color:"rgba(255,255,255,.75)",fontSize:12.5,marginTop:3}}>
+          Choisissez le mot de passe qui protégera votre accès.
+        </div>
+      </div>
+
+      <div className="carte carte-pad">
+        <div className="champ-bloc">
+          <label className="champ-label">Nouveau mot de passe</label>
+          <ChampMotDePasse valeur={mdp} onChange={(e)=>setMdp(e.target.value)}
+            placeholder="Au moins 8 caractères" autoComplete="new-password" onEnter={enregistrer}/>
+        </div>
+        <div className="champ-bloc">
+          <label className="champ-label">Confirmez le mot de passe</label>
+          <ChampMotDePasse valeur={confirmation} onChange={(e)=>setConfirmation(e.target.value)}
+            placeholder="Saisissez à nouveau" autoComplete="new-password" onEnter={enregistrer}/>
+        </div>
+
+        {erreur && (
+          <div style={{background:"#FBEAE7",color:"#C0392B",fontSize:12.5,fontWeight:600,
+            padding:"10px 12px",borderRadius:11,marginBottom:12}}>{erreur}</div>
+        )}
+
+        <button className="btn btn-vert" onClick={enregistrer} disabled={chargement}>
+          <KeyRound size={17}/> {chargement ? "Enregistrement…" : "Enregistrer le mot de passe"}
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -2287,6 +2554,7 @@ function nomSite(id){ const s = SITES.find(x => x.id === id); return s ? s.ville
 function Admin(){
   const [etat, setEtat]     = useState("verif");   // "verif" | "connexion" | "chargement" | "refuse" | "ok"
   const [data, setData]     = useState(null);
+  const [souscriptions, setSouscriptions] = useState([]);   // demandes reçues depuis le site
   const [erreur, setErreur] = useState("");
 
   // Vérifie le droit admin côté serveur, puis charge les données réelles
@@ -2296,7 +2564,15 @@ function Admin(){
       const admin = await appelRPC("is_admin", {});
       if(!admin){ setEtat("refuse"); return; }
       const d = await appelRPC("admin_dashboard", {});
-      setData(d); setEtat("ok");
+      setData(d);
+      // liste des souscriptions reçues (n'empêche pas l'affichage du tableau si elle échoue)
+      try{
+        const s = await appelRPC("lister_souscriptions", {});
+        setSouscriptions(Array.isArray(s) ? s : []);
+      }catch(_){
+        setSouscriptions([]);
+      }
+      setEtat("ok");
       window.scrollTo({ top:0, behavior:"smooth" });
     }catch(e){
       deconnexion(); setEtat("connexion"); setErreur(messageErreur(e));
@@ -2484,6 +2760,62 @@ function Admin(){
           <div style={{fontSize:13,color:"var(--gris-500)"}}>Aucun dossier enregistré pour le moment.</div>
         )}
       </div>
+
+      {/* souscriptions reçues depuis le site */}
+      <div className="carte carte-pad" style={{marginTop:16}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+          <div className="eyebrow">Souscriptions reçues</div>
+          <span style={{fontSize:12,fontWeight:800,color:"var(--vert-700)",
+            background:"var(--vert-50)",padding:"3px 10px",borderRadius:20}}>
+            {souscriptions.length}
+          </span>
+        </div>
+        <div style={{fontSize:12,color:"var(--gris-500)",marginBottom:12}}>
+          Demandes envoyées depuis le formulaire du site.
+        </div>
+        {souscriptions.length > 0 ? (
+          <div style={{display:"flex",flexDirection:"column",gap:10}}>
+            {souscriptions.map((s,i)=>(
+              <div key={s.id || i} style={{border:"1px solid var(--gris-200)",
+                borderRadius:12,padding:"11px 12px",background:"#fff"}}>
+                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
+                  <span style={{fontWeight:800,fontSize:13.5,color:"var(--gris-700)"}}>
+                    {s.civilite ? s.civilite+" " : ""}{String(s.nom||"").trim()} {s.prenoms||""}
+                  </span>
+                  <span style={{fontSize:11,color:"var(--gris-400)",whiteSpace:"nowrap",flex:"0 0 auto"}}>
+                    {s.cree_le ? new Date(s.cree_le).toLocaleDateString("fr-FR") : ""}
+                  </span>
+                </div>
+                <div style={{fontSize:12,color:"var(--gris-500)",lineHeight:1.7,marginTop:2}}>
+                  <span style={{fontWeight:700,color:"var(--vert-700)"}}>{s.reference}</span>
+                  {" · "}{nomSite(s.site_id)}
+                  {" · "}{s.mode==="comptant" ? "Comptant" : "Échelonné"}
+                  {s.apport ? " · apport "+formaterFCFA(s.apport) : ""}
+                </div>
+                <div style={{display:"flex",gap:14,marginTop:8,flexWrap:"wrap"}}>
+                  {s.telephone && (
+                    <a href={"tel:"+s.telephone} style={{fontSize:12.5,fontWeight:700,
+                      color:"var(--vert-700)",textDecoration:"none",
+                      display:"inline-flex",alignItems:"center",gap:5}}>
+                      <Phone size={13}/> {s.telephone}
+                    </a>
+                  )}
+                  {s.email && (
+                    <a href={"mailto:"+s.email} style={{fontSize:12,color:"var(--gris-500)",
+                      textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5}}>
+                      <Mail size={13}/> {s.email}
+                    </a>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div style={{fontSize:13,color:"var(--gris-500)"}}>
+            Aucune souscription reçue pour le moment.
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -2523,6 +2855,7 @@ export default function App(){
   const [ongletActif, setOngletActif] = useState("accueil");
   const [modeAdmin, setModeAdmin] = useState(false);
   const [adminDebloque, setAdminDebloque] = useState(false); // tableau de bord rendu visible via 5 tappes sur le logo
+  const [recuperation, setRecuperation]   = useState(null);  // lien « nouveau mot de passe » reçu par email : { jeton } | { erreur } | null
   const refDebloque  = useRef(false);
   const refTaps      = useRef(0);
   const refMinuteur  = useRef(null);
@@ -2570,6 +2903,13 @@ export default function App(){
   // retour en haut à chaque changement d'onglet
   useEffect(()=>{ window.scrollTo({ top:0, behavior:"smooth" }); }, [ongletActif]);
 
+  // au chargement : si l'adresse contient un lien de récupération (venu de l'email),
+  // on bascule sur l'écran « nouveau mot de passe » et on nettoie l'adresse.
+  useEffect(()=>{
+    const lien = lireLienRecuperation();
+    if(lien){ setRecuperation(lien); nettoyerAdresse(); }
+  }, []);
+
   // import de médias (photos compressées + enregistrées ; vidéos pour la session)
   const gererImport = async (idSite, fichiers)=>{
     const nouveaux = [];
@@ -2604,6 +2944,27 @@ export default function App(){
   };
 
   const allerA = (id)=> setOngletActif(id);
+
+  // ÉCRAN PRIORITAIRE : nouveau mot de passe (l'utilisateur arrive depuis le lien email).
+  // Affiché seul, avec le logo, sans navigation, pour qu'il aille au bout sans distraction.
+  if(recuperation){
+    return (
+      <div className="gea-app">
+        <style dangerouslySetInnerHTML={{ __html: css }}/>
+        <div className="gea-shell gea-shell--solo">
+          <header className="entete">
+            <span style={{display:"inline-flex"}}><LogoCompact/></span>
+          </header>
+          <main>
+            <EcranNouveauMotDePasse
+              jeton={recuperation.jeton}
+              messageLien={recuperation.erreur}
+              onTermine={()=>{ setRecuperation(null); setOngletActif("client"); }}/>
+          </main>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="gea-app">
