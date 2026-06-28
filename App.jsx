@@ -340,6 +340,11 @@ const WHATSAPP_GEA = [
   { nom:"Conseiller 2", numero:"2250504425932" },
 ];
 
+/* ⚠️ NUMÉRO WHATSAPP DU SERVICE COMMERCIAL — destinataire du bouton "Transmettre"
+   dans l'espace Admin (envoi du dossier après vérification par le conseiller).
+   Même format : indicatif 225 + le numéro à 10 chiffres EN ENTIER (on garde le 0). */
+const SERVICE_COMMERCIAL = { nom:"Service commercial", numero:"2250700003306" };
+
 /* 📸 PHOTOS RÉELLES INTÉGRÉES AU BUILD (visibles par TOUS sur le lien public).
    Pour chaque site, ajoutez des entrées au choix :
      • une URL publique : "https://exemple.com/terrain-1.jpg"
@@ -686,6 +691,54 @@ function lienWhatsAppLead(f, site, ref, numero){
   L.push("");
   L.push(`Référence dossier : ${ref}`);
   return `https://wa.me/${numero}?text=${encodeURIComponent(L.join("\n"))}`;
+}
+// Construit le lien WhatsApp pré-rempli pour TRANSMETTRE un dossier de souscription
+// au service commercial, à partir d'un enregistrement "s" du registre (table souscriptions).
+function lienWhatsAppCommercial(s, numero){
+  const echelonne = s.mode !== "comptant";
+  const mont = (v)=> formaterFCFA(Number(v) || 0);
+  const L = [];
+  const add = (label, val)=>{ if(val !== undefined && val !== null && String(val).trim() !== "") L.push(label + " : " + val); };
+
+  L.push("Bonjour,");
+  L.push("Dossier de souscription à concrétiser (vérifié par le conseiller) :");
+  L.push("");
+  L.push("RÉFÉRENCE : " + (s.reference || "—"));
+  if(s.cree_le) L.push("Souscrit le : " + new Date(s.cree_le).toLocaleString("fr-FR"));
+  L.push("");
+  L.push("— IDENTITÉ —");
+  add("Civilité", s.civilite);
+  add("Nom", s.nom);
+  add("Prénoms", s.prenoms);
+  add("Naissance", [s.naissance, s.lieu_naissance].filter(Boolean).join(" à "));
+  add("Nationalité", s.nationalite);
+  add("Profession", s.profession);
+  add("Pièce", [s.type_piece, s.num_piece].filter(Boolean).join(" "));
+  L.push("");
+  L.push("— CONTACT —");
+  add("Téléphone", s.telephone);
+  add("E-mail", s.email);
+  add("Résidence", s.residence);
+  if(s.contact_nom || s.contact_tel) add("Personne à prévenir", [s.contact_nom, s.contact_tel].filter(Boolean).join(" — "));
+  L.push("");
+  L.push("— PROJET —");
+  add("Site", nomSite(s.site_id));
+  add("Mode de paiement", echelonne ? "Échelonné" : "Comptant");
+  if(echelonne){
+    if(s.apport)     add("Apport", mont(s.apport));
+    if(s.mensualite) add("Mensualité", mont(s.mensualite));
+  }
+  add("Frais de dossier", mont(FRAIS_DOSSIER));
+  L.push("");
+  L.push("— MONTANT —");
+  if(echelonne){
+    add("Prix du terrain", mont(PRIX_TERRAIN));
+    add("Montant global (terrain + frais)", mont(PRIX_TERRAIN + FRAIS_DOSSIER));
+  } else {
+    add("Prix comptant", mont(PRIX_COMPTANT));
+    add("À régler (comptant + frais)", mont(PRIX_COMPTANT + FRAIS_DOSSIER));
+  }
+  return "https://wa.me/" + numero + "?text=" + encodeURIComponent(L.join("\n"));
 }
 // Affiche un numéro stocké "2250708812234" sous forme lisible "+225 07 08 81 22 34"
 function formaterTel(numero){
@@ -2551,6 +2604,220 @@ function EspaceClient(){
 const COULEURS_SITE = { yam:"#13502E", jac:"#2E7D4F", songon:"#C9A227" };
 function nomSite(id){ const s = SITES.find(x => x.id === id); return s ? s.ville : (id || "—"); }
 
+/* Fiche détaillée d'un souscripteur (dépliable) + bouton de transmission au service commercial. */
+function FicheSouscripteur({ s, ouvert, onToggle, onTransmettre, enCours }){
+  const echelonne  = s.mode !== "comptant";
+  const transmise  = String(s.statut || "").toLowerCase() === "transmis";
+  const dh         = s.cree_le ? new Date(s.cree_le) : null;
+  const dateCourt  = dh ? dh.toLocaleDateString("fr-FR") : "";
+  const heureCourt = dh ? dh.toLocaleTimeString("fr-FR", { hour:"2-digit", minute:"2-digit" }) : "";
+  const lien       = lienWhatsAppCommercial(s, SERVICE_COMMERCIAL.numero);
+
+  // ligne "label : valeur" (n'affiche rien si la valeur est vide)
+  const ligne = (label, val)=>{
+    if(val === undefined || val === null || String(val).trim() === "") return null;
+    return (
+      <div style={{display:"flex",justifyContent:"space-between",gap:14,padding:"7px 0",borderBottom:"1px solid var(--gris-100)"}}>
+        <span style={{fontSize:11.5,color:"var(--gris-500)",flex:"0 0 auto"}}>{label}</span>
+        <span style={{fontSize:12.5,fontWeight:600,color:"var(--gris-700)",textAlign:"right",wordBreak:"break-word"}}>{val}</span>
+      </div>
+    );
+  };
+  const titre = (Icone, txt)=>(
+    <div style={{display:"flex",alignItems:"center",gap:7,margin:"15px 0 3px",color:"var(--vert-700)"}}>
+      <Icone size={14}/>
+      <span style={{fontSize:11,fontWeight:800,letterSpacing:".4px",textTransform:"uppercase"}}>{txt}</span>
+    </div>
+  );
+  const recap = (label, val, fort)=>(
+    <div style={{display:"flex",justifyContent:"space-between",gap:12,padding:"3px 0"}}>
+      <span style={{fontSize:12,color: fort ? "var(--vert-800)" : "var(--gris-500)",fontWeight: fort ? 800 : 500}}>{label}</span>
+      <span style={{fontSize:12.5,color: fort ? "var(--vert-800)" : "var(--gris-700)",fontWeight: fort ? 800 : 700}}>{val}</span>
+    </div>
+  );
+
+  const badge = transmise
+    ? <span style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:10.5,fontWeight:800,color:"var(--vert-ok)",background:"var(--vert-50)",border:"1px solid var(--vert-100)",padding:"2px 8px",borderRadius:20}}><Check size={11}/> Transmise</span>
+    : <span style={{display:"inline-flex",alignItems:"center",gap:4,fontSize:10.5,fontWeight:800,color:"var(--or-700)",background:"var(--or-100)",padding:"2px 8px",borderRadius:20}}>Nouvelle</span>;
+
+  return (
+    <div>
+      {/* en-tête cliquable */}
+      <div onClick={onToggle} style={{cursor:"pointer",display:"flex",alignItems:"center",gap:10,padding:"12px 13px"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontWeight:800,fontSize:13.5,color:"var(--gris-700)"}}>
+              {s.civilite ? s.civilite + " " : ""}{String(s.nom || "").trim()} {s.prenoms || ""}
+            </span>
+            {badge}
+          </div>
+          <div style={{fontSize:11.5,color:"var(--gris-500)",marginTop:3,display:"flex",flexWrap:"wrap",gap:"2px 8px"}}>
+            <span style={{fontWeight:700,color:"var(--vert-700)"}}>{s.reference}</span>
+            <span>· {nomSite(s.site_id)}</span>
+            <span>· {echelonne ? "Échelonné" : "Comptant"}</span>
+            {dateCourt && <span>· {dateCourt}{heureCourt ? " à " + heureCourt : ""}</span>}
+          </div>
+        </div>
+        <ChevronRight size={18} style={{color:"var(--gris-400)",flex:"0 0 auto",transform: ouvert ? "rotate(90deg)" : "none",transition:"transform .2s"}}/>
+      </div>
+
+      {/* fiche détaillée */}
+      {ouvert && (
+        <div style={{padding:"0 13px 14px",borderTop:"1px solid var(--gris-100)"}}>
+          {titre(User, "Identité")}
+          {ligne("Civilité", s.civilite)}
+          {ligne("Nom", String(s.nom || "").trim())}
+          {ligne("Prénoms", s.prenoms)}
+          {ligne("Naissance", [s.naissance, s.lieu_naissance].filter(Boolean).join(" à "))}
+          {ligne("Nationalité", s.nationalite)}
+          {ligne("Profession", s.profession)}
+          {ligne("Pièce", [s.type_piece, s.num_piece].filter(Boolean).join(" · "))}
+
+          {titre(Phone, "Contact")}
+          <div style={{display:"flex",flexWrap:"wrap",gap:"6px 16px",padding:"7px 0"}}>
+            {s.telephone && <a href={"tel:" + s.telephone} style={{fontSize:12.5,fontWeight:700,color:"var(--vert-700)",textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5}}><Phone size={13}/> {formaterTel(s.telephone)}</a>}
+            {s.email && <a href={"mailto:" + s.email} style={{fontSize:12,color:"var(--gris-500)",textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5}}><Mail size={13}/> {s.email}</a>}
+          </div>
+          {ligne("Résidence", s.residence)}
+          {(s.contact_nom || s.contact_tel) && ligne("Personne à prévenir", [s.contact_nom, s.contact_tel].filter(Boolean).join(" — "))}
+
+          {titre(MapPin, "Projet & paiement")}
+          {ligne("Site", nomSite(s.site_id))}
+          {ligne("Mode de paiement", echelonne ? "Échelonné" : "Comptant")}
+          {echelonne && ligne("Apport", s.apport ? formaterFCFA(s.apport) : null)}
+          {echelonne && ligne("Mensualité", s.mensualite ? formaterFCFA(s.mensualite) : null)}
+          {ligne("Frais de dossier", formaterFCFA(FRAIS_DOSSIER))}
+          {ligne("Souscrit le", dh ? dh.toLocaleString("fr-FR") : null)}
+          {transmise && s.transmis_le && ligne("Transmise le", new Date(s.transmis_le).toLocaleString("fr-FR"))}
+
+          {/* récapitulatif financier */}
+          <div style={{background:"var(--vert-50)",border:"1px solid var(--vert-100)",borderRadius:12,padding:"10px 12px",marginTop:13}}>
+            <div style={{fontSize:10.5,fontWeight:800,letterSpacing:".4px",color:"var(--vert-700)",textTransform:"uppercase",marginBottom:6}}>Récapitulatif</div>
+            {echelonne ? (
+              <>
+                {recap("Prix du terrain", formaterFCFA(PRIX_TERRAIN))}
+                {recap("Frais de dossier", formaterFCFA(FRAIS_DOSSIER))}
+                {recap("Montant global", formaterFCFA(PRIX_TERRAIN + FRAIS_DOSSIER), true)}
+              </>
+            ) : (
+              <>
+                {recap("Prix comptant", formaterFCFA(PRIX_COMPTANT))}
+                {recap("Frais de dossier", formaterFCFA(FRAIS_DOSSIER))}
+                {recap("À régler", formaterFCFA(PRIX_COMPTANT + FRAIS_DOSSIER), true)}
+              </>
+            )}
+          </div>
+
+          {/* bouton de transmission au service commercial */}
+          <a href={lien} target="_blank" rel="noopener noreferrer"
+            onClick={()=> onTransmettre(s)}
+            className="btn btn-vert" style={{marginTop:13,opacity: enCours ? .7 : 1}}>
+            <MessageCircle size={17}/> {transmise ? "Transmettre à nouveau" : "Transmettre au service commercial"}
+          </a>
+          <div style={{fontSize:11,color:"var(--gris-400)",textAlign:"center",marginTop:7,lineHeight:1.5}}>
+            WhatsApp s'ouvre avec le dossier complet, pré-rempli vers le {SERVICE_COMMERCIAL.nom} ({formaterTel(SERVICE_COMMERCIAL.numero)}).
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Section "Souscriptions reçues" de l'espace Admin : recherche, filtres, fiches dépliables. */
+function SectionSouscripteurs({ souscriptions }){
+  const [recherche, setRecherche] = useState("");
+  const [filtre, setFiltre]       = useState("toutes");   // "toutes" | "nouvelles" | "transmises"
+  const [ouvert, setOuvert]       = useState(null);        // id de la fiche dépliée
+  const [maj, setMaj]             = useState({});          // mises à jour locales après transmission
+  const [enCours, setEnCours]     = useState(null);        // id en cours de transmission
+
+  const liste = (souscriptions || []).map(s => ({ ...s, ...(maj[s.id] || {}) }));
+  const estTransmise = (s)=> String(s.statut || "").toLowerCase() === "transmis";
+  const nbNouvelles  = liste.filter(s => !estTransmise(s)).length;
+  const nbTransmises = liste.filter(s =>  estTransmise(s)).length;
+
+  const q = recherche.trim().toLowerCase();
+  const filtrees = liste.filter(s => {
+    if(filtre === "nouvelles"  &&  estTransmise(s)) return false;
+    if(filtre === "transmises" && !estTransmise(s)) return false;
+    if(!q) return true;
+    return [s.nom, s.prenoms, s.reference, s.telephone, s.email]
+      .filter(Boolean).some(v => String(v).toLowerCase().includes(q));
+  });
+
+  const transmettre = async (s)=>{
+    setEnCours(s.id);
+    try{
+      const r = await appelRPC("transmettre_souscription", { p_id: s.id });
+      setMaj(m => ({ ...m, [s.id]: { statut:"transmis", transmis_le:(r && r.transmis_le) || new Date().toISOString() } }));
+    }catch(_){
+      // l'envoi WhatsApp a tout de même eu lieu : on marque quand même la fiche comme transmise
+      setMaj(m => ({ ...m, [s.id]: { statut:"transmis", transmis_le:new Date().toISOString() } }));
+    }finally{
+      setEnCours(null);
+    }
+  };
+
+  const puce = (val, libelle, n)=>(
+    <button onClick={()=>setFiltre(val)} style={{
+      border:"none",cursor:"pointer",fontSize:12,fontWeight:700,padding:"6px 12px",borderRadius:20,
+      background: filtre===val ? "var(--vert-700)" : "var(--gris-100)",
+      color:     filtre===val ? "#fff" : "var(--gris-500)"}}>
+      {libelle}{n != null ? " (" + n + ")" : ""}
+    </button>
+  );
+
+  return (
+    <div className="carte carte-pad" style={{marginTop:16}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+        <div className="eyebrow">Souscriptions reçues</div>
+        <span style={{fontSize:12,fontWeight:800,color:"var(--vert-700)",background:"var(--vert-50)",padding:"3px 10px",borderRadius:20}}>
+          {liste.length}
+        </span>
+      </div>
+      <div style={{fontSize:12,color:"var(--gris-500)",marginBottom:12}}>
+        Cliquez sur un souscripteur pour ouvrir sa fiche complète et la transmettre au service commercial.
+      </div>
+
+      {liste.length > 0 && (
+        <>
+          <input className="champ" placeholder="Rechercher (nom, référence, téléphone…)"
+            value={recherche} onChange={(e)=>setRecherche(e.target.value)} style={{marginBottom:10}}/>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:14}}>
+            {puce("toutes", "Toutes", liste.length)}
+            {puce("nouvelles", "Nouvelles", nbNouvelles)}
+            {puce("transmises", "Transmises", nbTransmises)}
+          </div>
+        </>
+      )}
+
+      {filtrees.length > 0 ? (
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {filtrees.map((s,i)=>{
+            const cle = s.id || ("idx" + i);
+            return (
+              <div key={cle} style={{border:"1px solid var(--gris-200)",borderRadius:13,background:"#fff",overflow:"hidden"}}>
+                <FicheSouscripteur
+                  s={s}
+                  ouvert={ouvert === cle}
+                  onToggle={()=> setOuvert(o => o === cle ? null : cle)}
+                  onTransmettre={transmettre}
+                  enCours={enCours === s.id}/>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{fontSize:13,color:"var(--gris-500)",padding:"6px 0"}}>
+          {liste.length === 0
+            ? "Aucune souscription reçue pour le moment."
+            : "Aucune souscription ne correspond à votre recherche."}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Admin(){
   const [etat, setEtat]     = useState("verif");   // "verif" | "connexion" | "chargement" | "refuse" | "ok"
   const [data, setData]     = useState(null);
@@ -2761,61 +3028,8 @@ function Admin(){
         )}
       </div>
 
-      {/* souscriptions reçues depuis le site */}
-      <div className="carte carte-pad" style={{marginTop:16}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-          <div className="eyebrow">Souscriptions reçues</div>
-          <span style={{fontSize:12,fontWeight:800,color:"var(--vert-700)",
-            background:"var(--vert-50)",padding:"3px 10px",borderRadius:20}}>
-            {souscriptions.length}
-          </span>
-        </div>
-        <div style={{fontSize:12,color:"var(--gris-500)",marginBottom:12}}>
-          Demandes envoyées depuis le formulaire du site.
-        </div>
-        {souscriptions.length > 0 ? (
-          <div style={{display:"flex",flexDirection:"column",gap:10}}>
-            {souscriptions.map((s,i)=>(
-              <div key={s.id || i} style={{border:"1px solid var(--gris-200)",
-                borderRadius:12,padding:"11px 12px",background:"#fff"}}>
-                <div style={{display:"flex",justifyContent:"space-between",gap:8,alignItems:"flex-start"}}>
-                  <span style={{fontWeight:800,fontSize:13.5,color:"var(--gris-700)"}}>
-                    {s.civilite ? s.civilite+" " : ""}{String(s.nom||"").trim()} {s.prenoms||""}
-                  </span>
-                  <span style={{fontSize:11,color:"var(--gris-400)",whiteSpace:"nowrap",flex:"0 0 auto"}}>
-                    {s.cree_le ? new Date(s.cree_le).toLocaleDateString("fr-FR") : ""}
-                  </span>
-                </div>
-                <div style={{fontSize:12,color:"var(--gris-500)",lineHeight:1.7,marginTop:2}}>
-                  <span style={{fontWeight:700,color:"var(--vert-700)"}}>{s.reference}</span>
-                  {" · "}{nomSite(s.site_id)}
-                  {" · "}{s.mode==="comptant" ? "Comptant" : "Échelonné"}
-                  {s.apport ? " · apport "+formaterFCFA(s.apport) : ""}
-                </div>
-                <div style={{display:"flex",gap:14,marginTop:8,flexWrap:"wrap"}}>
-                  {s.telephone && (
-                    <a href={"tel:"+s.telephone} style={{fontSize:12.5,fontWeight:700,
-                      color:"var(--vert-700)",textDecoration:"none",
-                      display:"inline-flex",alignItems:"center",gap:5}}>
-                      <Phone size={13}/> {s.telephone}
-                    </a>
-                  )}
-                  {s.email && (
-                    <a href={"mailto:"+s.email} style={{fontSize:12,color:"var(--gris-500)",
-                      textDecoration:"none",display:"inline-flex",alignItems:"center",gap:5}}>
-                      <Mail size={13}/> {s.email}
-                    </a>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div style={{fontSize:13,color:"var(--gris-500)"}}>
-            Aucune souscription reçue pour le moment.
-          </div>
-        )}
-      </div>
+      {/* souscriptions reçues — tableau de bord détaillé (recherche, filtres, fiche, transmission) */}
+      <SectionSouscripteurs souscriptions={souscriptions} />
     </div>
   );
 }
