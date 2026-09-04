@@ -552,7 +552,16 @@ async function appelRPC(nom, params, _reessai){
     if(nouvelle) return appelRPC(nom, params, true);
     throw new Error("Session expirée. Merci de vous reconnecter.");
   }
-  if(!r.ok) throw new Error("Erreur serveur (" + r.status + ")");
+  if(!r.ok){
+    let msg = "Erreur serveur (" + r.status + ")";
+    try{
+      const corps = await r.json();
+      if(corps && (corps.message || corps.error_description || corps.msg)){
+        msg = corps.message || corps.error_description || corps.msg;
+      }
+    }catch(_){ /* corps non JSON : on garde le message générique */ }
+    throw new Error(msg);
+  }
   return await r.json();
 }
 
@@ -767,29 +776,81 @@ function compresserImage(fichier, largeurMax = 1280, qualite = 0.62){
     lecteur.readAsDataURL(fichier);
   });
 }
-// Stockage persistant des photos ajoutées via l'admin.
-// Utilise window.storage si disponible (aperçu Claude), sinon localStorage
-// (site en ligne), et reste sans erreur si aucun stockage n'est accessible.
-async function chargerPhotos(idSite){
-  const cle = "gea_photos_" + idSite;
+/* ------------------------------------------------------------
+   MÉDIAS DES SITES (galerie) — stockage cloud partagé (Supabase Storage)
+   Bucket public en lecture (visible par tous les visiteurs, sur tous
+   les appareils) ; l'ajout et la suppression sont réservés à
+   l'administrateur connecté et vérifiés côté serveur (policy is_admin()).
+   ------------------------------------------------------------ */
+const BUCKET_MEDIAS = "medias-sites";
+
+// URL publique directe d'un média (aucune authentification requise pour l'afficher)
+function urlMedia(chemin){
+  return SUPABASE_URL + "/storage/v1/object/public/" + BUCKET_MEDIAS + "/" + encodeURI(chemin);
+}
+
+// Liste les médias déjà en ligne pour un site
+async function listerMedias(idSite){
   try{
-    if(typeof window !== "undefined" && window.storage && window.storage.get){
-      const r = await window.storage.get(cle);
-      return r && r.value ? JSON.parse(r.value) : [];
-    }
-    const v = window.localStorage.getItem(cle);
-    return v ? JSON.parse(v) : [];
+    const rep = await fetch(SUPABASE_URL + "/storage/v1/object/list/" + BUCKET_MEDIAS, {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ prefix: idSite + "/", limit: 200, offset: 0,
+        sortBy: { column: "name", order: "asc" } }),
+    });
+    if(!rep.ok) return [];
+    const liste = await rep.json().catch(()=> []);
+    return (Array.isArray(liste) ? liste : [])
+      .filter(o => o && o.name && o.name !== ".emptyFolderPlaceholder" && o.id !== null)
+      .map(o => {
+        const chemin = idSite + "/" + o.name;
+        const ext = o.name.split(".").pop().toLowerCase();
+        const type = ["mp4","webm","mov","m4v"].includes(ext) ? "video" : "photo";
+        return { type, url: urlMedia(chemin), chemin };
+      });
   }catch(e){ return []; }
 }
-async function sauvegarderPhotos(idSite, listePhotos){
-  const cle = "gea_photos_" + idSite;
-  try{
-    if(typeof window !== "undefined" && window.storage && window.storage.set){
-      await window.storage.set(cle, JSON.stringify(listePhotos));
-    }else{
-      window.localStorage.setItem(cle, JSON.stringify(listePhotos));
-    }
-  }catch(e){ /* stockage indisponible : les photos restent visibles pour la session */ }
+
+// Téléverse un média dans le stockage partagé (administrateur connecté requis —
+// la policy Supabase refuse la requête si le compte n'est pas admin).
+async function televerserMedia(idSite, fichier, nomSuffixe){
+  const session = lireSession();
+  if(!session) throw new Error("NON_CONNECTE");
+  const nomNet = (nomSuffixe || fichier.name || "media").replace(/[^a-zA-Z0-9._-]/g, "_");
+  const chemin = idSite + "/" + Date.now() + "-" + nomNet;
+  const rep = await fetch(SUPABASE_URL + "/storage/v1/object/" + BUCKET_MEDIAS + "/" + encodeURI(chemin), {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + session.access_token,
+      "Content-Type": fichier.type || "application/octet-stream",
+      "x-upsert": "true",
+    },
+    body: fichier,
+  });
+  if(!rep.ok){
+    const t = await rep.text().catch(()=> "");
+    throw new Error(rep.status === 403 ? "DROITS_INSUFFISANTS" : (t || "ENVOI_IMPOSSIBLE"));
+  }
+  return { type: fichier.type && fichier.type.startsWith("video/") ? "video" : "photo",
+    url: urlMedia(chemin), chemin };
+}
+
+// Supprime définitivement un média du stockage partagé (administrateur uniquement)
+async function supprimerMediaCloud(chemin){
+  const session = lireSession();
+  if(!session) throw new Error("NON_CONNECTE");
+  const rep = await fetch(SUPABASE_URL + "/storage/v1/object/" + BUCKET_MEDIAS, {
+    method: "DELETE",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + session.access_token,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ prefixes: [chemin] }),
+  });
+  if(!rep.ok) throw new Error("SUPPRESSION_IMPOSSIBLE");
+  return true;
 }
 
 /* ============================================================
@@ -1776,7 +1837,8 @@ function Souscription(){
   const [f, setF] = useState({
     civilite:"M.", nom:"", prenoms:"", naissance:"", lieuNaissance:"", nationalite:"Ivoirienne",
     profession:"", telephone:"", email:"", residence:"", typePiece:"CNI", numPiece:"",
-    site:"yam", mode:"echelonne", apport:"", mensualite:"", contactNom:"", contactTel:""
+    site:"yam", mode:"echelonne", apport:"", mensualite:"", contactNom:"", contactTel:"",
+    siteWeb:""   // champ "piège à robots" (honeypot) : invisible pour un humain, souvent rempli par les bots
   });
   const [erreur, setErreur] = useState("");
   const [envoye, setEnvoye] = useState(false);
@@ -1791,8 +1853,19 @@ function Souscription(){
   // Enregistre la souscription dans Supabase (table "souscriptions") via la fonction
   // serveur "creer_souscription", puis affiche l'écran de confirmation + WhatsApp.
   const valider = async ()=>{
+    // piège à robots : un vrai visiteur ne remplit jamais ce champ (invisible à l'écran) —
+    // s'il est rempli, on abandonne silencieusement sans appeler le serveur.
+    if(f.siteWeb.trim()){
+      setEnvoye(true);
+      return;
+    }
     if(!f.nom.trim() || !f.prenoms.trim() || !f.telephone.trim()){
       setErreur("Merci de renseigner au minimum vos nom, prénoms et téléphone.");
+      window.scrollTo({ top:0, behavior:"smooth" });
+      return;
+    }
+    if(!f.email.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(f.email.trim())){
+      setErreur("Merci de renseigner une adresse email valide : elle vous permettra d'accéder à votre espace client.");
       window.scrollTo({ top:0, behavior:"smooth" });
       return;
     }
@@ -1808,7 +1881,7 @@ function Souscription(){
         p_nationalite:    f.nationalite,
         p_profession:     f.profession,
         p_telephone:      f.telephone.trim(),
-        p_email:          f.email,
+        p_email:          f.email.trim(),
         p_residence:      f.residence,
         p_type_piece:     f.typePiece,
         p_num_piece:      f.numPiece,
@@ -1822,12 +1895,23 @@ function Souscription(){
       // le serveur renvoie la référence officielle (ex. GEA-2026-0007)
       setRefDossier(resultat && resultat.reference ? resultat.reference : refDeSecours());
       setSecoursLocal(false);
+      setEnvoiEnCours(false);
+      setEnvoye(true);
+      window.scrollTo({ top:0, behavior:"smooth" });
     }catch(e){
-      // enregistrement en ligne indisponible : on NE PERD PAS le client, WhatsApp prend le relais
+      const message = (e && e.message) || "";
+      const estRefus = message.includes("obligatoire pour pouvoir accéder")
+        || message.includes("Vous avez déjà envoyé une demande");
+      setEnvoiEnCours(false);
+      if(estRefus){
+        // refus légitime (règle métier), pas une panne : on affiche le vrai message, pas de secours WhatsApp
+        setErreur(message);
+        window.scrollTo({ top:0, behavior:"smooth" });
+        return;
+      }
+      // enregistrement en ligne indisponible (panne réseau/serveur) : on NE PERD PAS le client, WhatsApp prend le relais
       setRefDossier(refDeSecours());
       setSecoursLocal(true);
-    }finally{
-      setEnvoiEnCours(false);
       setEnvoye(true);
       window.scrollTo({ top:0, behavior:"smooth" });
     }
@@ -1944,8 +2028,19 @@ function Souscription(){
       <div className="carte carte-pad" style={{marginBottom:16}}>
         <div className="eyebrow" style={{marginBottom:12}}>2 · Coordonnées</div>
         {champ("Téléphone","telephone","tel","+225 ...")}
-        {champ("E-mail","email","email","vous@email.com")}
+        {champ("E-mail *","email","email","vous@email.com")}
+        <div style={{fontSize:11,color:"var(--gris-500)",marginTop:-8,marginBottom:12}}>
+          * Obligatoire — c'est avec cet email que vous pourrez créer votre compte et suivre votre dossier dans l'Espace client.
+        </div>
         {champ("Résidence / adresse","residence","text","Commune, quartier")}
+
+        {/* champ piège à robots : invisible et inaccessible pour un humain (hors écran + aria-hidden),
+            mais souvent rempli automatiquement par les robots de spam */}
+        <div aria-hidden="true" style={{position:"absolute",left:"-9999px",top:"auto",width:1,height:1,overflow:"hidden"}}>
+          <label htmlFor="site-web">Site web</label>
+          <input id="site-web" name="siteWeb" type="text" tabIndex={-1} autoComplete="off"
+            value={f.siteWeb} onChange={(e)=>set("siteWeb", e.target.value)}/>
+        </div>
       </div>
 
       {/* Pièce d'identité */}
@@ -2818,10 +2913,11 @@ function SectionSouscripteurs({ souscriptions }){
   );
 }
 
-function Admin(){
+function Admin({ onAdminConfirme } = {}){
   const [etat, setEtat]     = useState("verif");   // "verif" | "connexion" | "chargement" | "refuse" | "ok"
   const [data, setData]     = useState(null);
   const [souscriptions, setSouscriptions] = useState([]);   // demandes reçues depuis le site
+  const [relances, setRelances] = useState([]);   // clients dont le versement du mois n'est pas encore enregistré
   const [erreur, setErreur] = useState("");
 
   // Vérifie le droit admin côté serveur, puis charge les données réelles
@@ -2830,6 +2926,7 @@ function Admin(){
     try{
       const admin = await appelRPC("is_admin", {});
       if(!admin){ setEtat("refuse"); return; }
+      if(onAdminConfirme) onAdminConfirme();   // débloque aussi le mode admin de la galerie médias
       const d = await appelRPC("admin_dashboard", {});
       setData(d);
       // liste des souscriptions reçues (n'empêche pas l'affichage du tableau si elle échoue)
@@ -2838,6 +2935,13 @@ function Admin(){
         setSouscriptions(Array.isArray(s) ? s : []);
       }catch(_){
         setSouscriptions([]);
+      }
+      // clients à relancer (versement du mois en cours non encore enregistré)
+      try{
+        const r = await appelRPC("clients_a_relancer", {});
+        setRelances(Array.isArray(r) ? r : []);
+      }catch(_){
+        setRelances([]);
       }
       setEtat("ok");
       window.scrollTo({ top:0, behavior:"smooth" });
@@ -2955,6 +3059,52 @@ function Admin(){
           <div className="v">{d.nb_retards != null ? d.nb_retards : 0}</div><div className="l">Retards</div>
         </div>
       </div>
+
+      {/* clients à relancer (versement du mois non encore enregistré) */}
+      {relances.length > 0 && (
+        <div className="carte carte-pad" style={{marginBottom:16,border:"1px solid #F0DCA8"}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <Clock size={16} color="var(--rouge)"/>
+            <div className="eyebrow" style={{marginBottom:0}}>Clients à relancer</div>
+            <span style={{marginLeft:"auto",fontSize:12,fontWeight:800,color:"var(--rouge)",
+              background:"var(--rouge-bg)",borderRadius:20,padding:"2px 10px"}}>{relances.length}</span>
+          </div>
+          <div style={{fontSize:12,color:"var(--gris-500)",marginBottom:12}}>
+            Aucun versement enregistré ce mois-ci. Échéance fixée au 5 de chaque mois.
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+            {relances.map((c)=>{
+              const numeroWa = (()=>{ const d = String(c.telephone||"").replace(/[^\d]/g,"");
+                return d.startsWith("225") ? d : ("225" + d); })();
+              return (
+                <div key={c.id} style={{display:"flex",alignItems:"center",gap:10,
+                  padding:"9px 10px",borderRadius:11,background:"var(--gris-50)"}}>
+                  <div style={{flex:1,minWidth:0}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"var(--gris-700)",
+                      whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                      {[c.civilite,c.nom,c.prenom].filter(Boolean).join(" ")}
+                    </div>
+                    <div style={{fontSize:11.5,color:"var(--gris-500)"}}>
+                      {nomSite(c.site_id)} · {c.mensualite ? c.mensualite.toLocaleString("fr-FR") + " FCFA/mois" : "—"}
+                      {c.jours_retard > 0 ? (
+                        <span style={{color:"var(--rouge)",fontWeight:700}}> · {c.jours_retard} j de retard</span>
+                      ) : (
+                        <span style={{color:"var(--or-700)",fontWeight:700}}> · échéance à venir</span>
+                      )}
+                    </div>
+                  </div>
+                  {c.telephone && (
+                    <a href={"https://wa.me/" + numeroWa} target="_blank" rel="noopener noreferrer"
+                      className="btn btn-vert btn-sm" style={{flex:"0 0 auto",padding:"7px 10px",textDecoration:"none"}}>
+                      <MessageCircle size={14}/> WhatsApp
+                    </a>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* encaissements mensuels */}
       {encaissements.length > 0 ? (
@@ -3098,17 +3248,15 @@ export default function App(){
     songon: mediasIntegres("songon"),
   });
 
-  // chargement au démarrage : photos intégrées au build + photos ajoutées via l'admin (stockage local)
+  // chargement au démarrage : photos intégrées au build + médias du stockage cloud partagé
+  // (visibles par tous les visiteurs, sur tous les appareils — plus seulement sur celui de l'admin)
   useEffect(()=>{
     (async ()=>{
       const charges = {};
       for(const s of SITES){
         const base = mediasIntegres(s.id);
-        const urls = await chargerPhotos(s.id);
-        const enPlus = urls
-          .filter(u => !(PHOTOS_SITE[s.id] || []).includes(u))
-          .map(url => ({ type:"photo", url }));
-        charges[s.id] = [ ...base, ...enPlus ];
+        const enLigne = await listerMedias(s.id);
+        charges[s.id] = [ ...base, ...enLigne ];
       }
       setMediasParSite(prev => ({ ...prev, ...charges }));
     })();
@@ -3124,37 +3272,62 @@ export default function App(){
     if(lien){ setRecuperation(lien); nettoyerAdresse(); }
   }, []);
 
-  // import de médias (photos compressées + enregistrées ; vidéos pour la session)
+  // import de médias : téléversés dans le stockage cloud partagé (photos compressées,
+  // vidéos envoyées telles quelles). Réservé à l'administrateur — vérifié aussi côté serveur.
+  const TAILLE_MAX_MEDIA = 20 * 1024 * 1024; // 20 Mo — même limite qu'appliquée côté serveur (Supabase)
+
   const gererImport = async (idSite, fichiers)=>{
-    const nouveaux = [];
     for(const fichier of Array.from(fichiers)){
-      if(fichier.type.startsWith("image/")){
-        const dataURL = await compresserImage(fichier);
-        nouveaux.push({ type:"photo", url:dataURL });
-      } else if(fichier.type.startsWith("video/")){
-        nouveaux.push({ type:"video", url:URL.createObjectURL(fichier) });
+      try{
+        let aEnvoyer, nomSuffixe;
+        if(fichier.type.startsWith("image/")){
+          const dataURL = await compresserImage(fichier);
+          aEnvoyer = await (await fetch(dataURL)).blob();
+          nomSuffixe = "photo.jpg";
+        } else if(fichier.type.startsWith("video/")){
+          aEnvoyer = fichier;
+        } else {
+          continue;
+        }
+        if(aEnvoyer.size > TAILLE_MAX_MEDIA){
+          alert("« " + fichier.name + " » dépasse la taille maximale autorisée (20 Mo). Choisissez un fichier plus léger.");
+          continue;
+        }
+        const media = await televerserMedia(idSite, aEnvoyer, nomSuffixe);
+        setMediasParSite(prev => ({ ...prev, [idSite]: [ ...(prev[idSite]||[]), media ] }));
+      }catch(e){
+        alert("Import impossible pour « " + fichier.name + " » : " +
+          (e && e.message === "NON_CONNECTE" ? "connectez-vous en tant qu'administrateur." : "veuillez réessayer."));
       }
     }
-    if(!nouveaux.length) return;
-    setMediasParSite(prev=>{
-      const maj = { ...prev, [idSite]:[ ...(prev[idSite]||[]), ...nouveaux ] };
-      sauvegarderPhotos(idSite, maj[idSite]
-        .filter(m=>m.type==="photo" && !(PHOTOS_SITE[idSite] || []).includes(m.url))
-        .map(m=>m.url));
-      return maj;
-    });
   };
 
-  // suppression d'un média
-  const supprimerMedia = (idSite, index)=>{
+  // suppression d'un média : définitive et immédiate pour les médias du stockage cloud
+  // (les photos intégrées au site n'ont pas de "chemin" : elles ne sont retirées que de cet affichage).
+  const supprimerMedia = async (idSite, index)=>{
+    const media = (mediasParSite[idSite] || [])[index];
+    if(media && media.chemin){
+      try{ await supprimerMediaCloud(media.chemin); }
+      catch(e){ alert("Suppression impossible : connectez-vous en tant qu'administrateur."); return; }
+    }
     setMediasParSite(prev=>{
       const liste = [ ...(prev[idSite]||[]) ];
       liste.splice(index,1);
-      sauvegarderPhotos(idSite, liste
-        .filter(m=>m.type==="photo" && !(PHOTOS_SITE[idSite] || []).includes(m.url))
-        .map(m=>m.url));
       return { ...prev, [idSite]:liste };
     });
+  };
+
+  // Active le mode admin de la galerie SEULEMENT si le compte connecté est
+  // effectivement administrateur (vérifié côté serveur) — le bouton ne suffit plus à lui seul.
+  const activerModeAdmin = async ()=>{
+    if(modeAdmin){ setModeAdmin(false); return; }
+    let admin = false;
+    try{ admin = await appelRPC("is_admin", {}); }catch(e){ admin = false; }
+    if(admin){ setModeAdmin(true); }
+    else{
+      alert("Connectez-vous d'abord avec votre compte administrateur (onglet Admin) pour gérer les photos et vidéos.");
+      setOngletActif("admin");
+    }
   };
 
   const allerA = (id)=> setOngletActif(id);
@@ -3191,7 +3364,7 @@ export default function App(){
             <LogoCompact/>
           </span>
           {(!MODE_PUBLIC || adminDebloque) && (
-            <button className="entete-admin" onClick={()=>setModeAdmin(v=>!v)}>
+            <button className="entete-admin" onClick={activerModeAdmin}>
               <span>{modeAdmin ? "Admin actif" : "Espace admin"}</span>
               <span className={"bascule" + (modeAdmin ? " on":"")}><span/></span>
             </button>
@@ -3217,7 +3390,7 @@ export default function App(){
           {ongletActif==="morcellement" && <Documents/>}
           {ongletActif==="souscription" && <Souscription/>}
           {ongletActif==="client" && <EspaceClient/>}
-          {(adminDebloque || !MODE_PUBLIC) && ongletActif==="admin"  && <Admin/>}
+          {(adminDebloque || !MODE_PUBLIC) && ongletActif==="admin"  && <Admin onAdminConfirme={()=>setModeAdmin(true)}/>}
         </main>
 
         {/* PIED DE PAGE */}
