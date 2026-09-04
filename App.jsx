@@ -2701,6 +2701,18 @@ function nomSite(id){ const s = SITES.find(x => x.id === id); return s ? s.ville
 
 /* Fiche détaillée d'un souscripteur (dépliable) + bouton de transmission au service commercial. */
 function FicheSouscripteur({ s, ouvert, onToggle, onTransmettre, enCours }){
+  const [espaceClient, setEspaceClient] = useState(null); // null | "en_cours" | { code_acces } | "deja_actif" | "erreur"
+  const activerEspaceClient = async ()=>{
+    setEspaceClient("en_cours");
+    try{
+      const r = await appelRPC("activer_espace_client", { p_id: s.id });
+      setEspaceClient({ code_acces: r && r.code_acces });
+    }catch(e){
+      const msg = messageErreur(e);
+      if(/déjà été activé/i.test(msg)) setEspaceClient("deja_actif");
+      else { setEspaceClient("erreur"); alert(msg); }
+    }
+  };
   const echelonne  = s.mode !== "comptant";
   const transmise  = String(s.statut || "").toLowerCase() === "transmis";
   const dh         = s.cree_le ? new Date(s.cree_le) : null;
@@ -2811,6 +2823,31 @@ function FicheSouscripteur({ s, ouvert, onToggle, onTransmettre, enCours }){
           </a>
           <div style={{fontSize:11,color:"var(--gris-400)",textAlign:"center",marginTop:7,lineHeight:1.5}}>
             WhatsApp s'ouvre avec le dossier complet, pré-rempli vers le {SERVICE_COMMERCIAL.nom} ({formaterTel(SERVICE_COMMERCIAL.numero)}).
+          </div>
+
+          {/* activation de l'espace client — à faire une fois les frais de dossier réglés */}
+          <div style={{marginTop:14,paddingTop:14,borderTop:"1px solid var(--gris-100)"}}>
+            {titre(User, "Espace client")}
+            {espaceClient && espaceClient.code_acces ? (
+              <div style={{background:"var(--vert-50)",border:"1px solid var(--vert-100)",borderRadius:12,padding:"10px 12px",fontSize:12.5,color:"var(--vert-800)",fontWeight:700}}>
+                Espace client activé. Le client peut se connecter avec son email ({s.email}).
+              </div>
+            ) : espaceClient === "deja_actif" ? (
+              <div style={{background:"var(--vert-50)",border:"1px solid var(--vert-100)",borderRadius:12,padding:"10px 12px",fontSize:12.5,color:"var(--vert-800)",fontWeight:700}}>
+                Espace client déjà activé pour ce dossier.
+              </div>
+            ) : (
+              <>
+                <div style={{fontSize:11.5,color:"var(--gris-500)",marginBottom:8,lineHeight:1.5}}>
+                  Une fois les frais de dossier réglés, activez l'espace client : le souscripteur pourra
+                  alors suivre ses versements et accéder à ses documents avec son email.
+                </div>
+                <button type="button" className="btn btn-ligne" onClick={activerEspaceClient}
+                  disabled={espaceClient === "en_cours"} style={{opacity: espaceClient === "en_cours" ? .7 : 1}}>
+                  {espaceClient === "en_cours" ? "Activation…" : "Activer l'espace client"}
+                </button>
+              </>
+            )}
           </div>
         </div>
       )}
@@ -3105,7 +3142,6 @@ function Admin({ onAdminConfirme } = {}){
           </div>
         </div>
       )}
-
       {/* encaissements mensuels */}
       {encaissements.length > 0 ? (
         <div className="carte carte-pad" style={{marginBottom:16}}>
